@@ -1,6 +1,6 @@
 {
   "name": "image-optimizer-pro",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Production-grade AVIF and WebP image optimization for Node.js, CLIs, and modern JavaScript frameworks.",
   "license": "MIT",
   "author": "image-optimizer-pro contributors",
