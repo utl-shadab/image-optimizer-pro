@@ -9,7 +9,13 @@ import { Command, CommanderError, InvalidArgumentError } from 'commander';
 
 import { optimizeImages } from '../core/optimizer';
 import { formatErrorMessage } from '../core/security';
-import type { CliRunOptions, OptimizerOptions, OutputFormat } from '../types';
+import type {
+  CliOutputWriter,
+  CliRunOptions,
+  ImageOptimizerPlugin,
+  OptimizerOptions,
+  OutputFormat,
+} from '../types';
 
 interface CliOptions {
   config?: string;
@@ -20,6 +26,12 @@ interface CliOptions {
   concurrency?: number;
   output?: string;
   format?: OutputFormat[];
+  rewrite?: string[];
+  rewriteExtensions?: string[];
+  prefer?: OutputFormat;
+  manifest?: boolean | string;
+  rewriteDryRun?: boolean;
+  progress?: boolean;
 }
 
 export function createCliProgram(options: CliRunOptions = {}): Command {
@@ -54,8 +66,20 @@ export function createCliProgram(options: CliRunOptions = {}): Command {
       parsePositiveInteger,
     )
     .option('--format <formats...>', 'output formats to generate (avif webp)', collectFormatOption)
+    .option('--rewrite <paths...>', 'directories or files to scan and rewrite')
+    .option(
+      '--rewrite-extensions <extensions...>',
+      'source file extensions to scan during reference rewriting',
+    )
+    .option('--prefer <format>', 'preferred rewrite output format (avif webp)', parseFormat)
+    .option(
+      '--manifest [path]',
+      'write a JSON manifest mapping original sources to optimized outputs',
+    )
+    .option('--rewrite-dry-run', 'report reference rewrite changes without writing source files')
+    .option('--progress', 'render an interactive progress bar when stdout is a TTY')
     .action(async (dir: string, cliOptions: CliOptions) => {
-      const optimizerOptions = resolveCliOptions(cliOptions);
+      const optimizerOptions = resolveCliOptions(cliOptions, stdout);
 
       const result = await optimizeImages(dir, optimizerOptions);
       process.exitCode = result.stats.errorFiles > 0 ? 1 : 0;
@@ -87,8 +111,8 @@ export async function runCli(
   }
 }
 
-function resolveCliOptions(cliOptions: CliOptions): OptimizerOptions {
-  return {
+function resolveCliOptions(cliOptions: CliOptions, stdout: CliOutputWriter): OptimizerOptions {
+  const optimizerOptions: OptimizerOptions = {
     ...(cliOptions.config !== undefined ? { config: cliOptions.config } : {}),
     ...(cliOptions.verbose !== undefined ? { verbose: cliOptions.verbose } : {}),
     ...(cliOptions.silent !== undefined ? { silent: cliOptions.silent } : {}),
@@ -97,7 +121,27 @@ function resolveCliOptions(cliOptions: CliOptions): OptimizerOptions {
     ...(cliOptions.concurrency !== undefined ? { concurrency: cliOptions.concurrency } : {}),
     ...(cliOptions.output !== undefined ? { outputDir: cliOptions.output } : {}),
     ...(cliOptions.format !== undefined ? { formats: cliOptions.format } : {}),
+    ...(cliOptions.manifest !== undefined ? { manifest: cliOptions.manifest } : {}),
   };
+
+  if (cliOptions.rewrite !== undefined) {
+    optimizerOptions.rewrite = {
+      targets: cliOptions.rewrite,
+      ...(cliOptions.rewriteExtensions !== undefined
+        ? { extensions: cliOptions.rewriteExtensions }
+        : {}),
+      ...(cliOptions.prefer !== undefined ? { prefer: cliOptions.prefer } : {}),
+      ...(cliOptions.rewriteDryRun !== undefined ? { dryRun: cliOptions.rewriteDryRun } : {}),
+    };
+  }
+
+  const progressPlugin = createProgressPlugin(cliOptions, stdout);
+
+  if (progressPlugin !== null) {
+    optimizerOptions.plugins = [...(optimizerOptions.plugins ?? []), progressPlugin];
+  }
+
+  return optimizerOptions;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -111,14 +155,19 @@ function parsePositiveInteger(value: string): number {
 }
 
 function collectFormatOption(value: string, previous: OutputFormat[] = []): OutputFormat[] {
+  const format = parseFormat(value);
+
+  return [...new Set([...previous, format])];
+}
+
+function parseFormat(value: string): OutputFormat {
   const normalized = value.toLowerCase();
 
   if (normalized !== 'avif' && normalized !== 'webp') {
     throw new InvalidArgumentError(`Unsupported format "${value}".`);
   }
 
-  const format: OutputFormat = normalized;
-  return [...new Set([...previous, format])];
+  return normalized;
 }
 
 function normalizeExitCode(exitCode: string | number | undefined): number {
@@ -159,4 +208,48 @@ function normalizeExecutionPath(filePath: string): string {
   } catch {
     return resolvedPath;
   }
+}
+
+function createProgressPlugin(
+  cliOptions: CliOptions,
+  stdout: CliOutputWriter,
+): ImageOptimizerPlugin | null {
+  if (
+    cliOptions.progress !== true ||
+    cliOptions.silent === true ||
+    process.env.CI === 'true' ||
+    stdout.isTTY !== true
+  ) {
+    return null;
+  }
+
+  let completedFiles = 0;
+  let rendered = false;
+
+  return {
+    name: 'cli-progress',
+    onFileComplete(_result, context) {
+      completedFiles += 1;
+      rendered = true;
+      stdout.write(`\r${renderProgressBar(completedFiles, context.stats.totalFiles)}`);
+    },
+    onComplete() {
+      if (rendered) {
+        stdout.write('\n');
+      }
+    },
+  };
+}
+
+function renderProgressBar(completedFiles: number, totalFiles: number): string {
+  const width = 24;
+  const safeTotal = Math.max(totalFiles, 1);
+  const ratio = Math.min(1, completedFiles / safeTotal);
+  const filledWidth = Math.round(ratio * width);
+  const emptyWidth = width - filledWidth;
+  const percent = Math.round(ratio * 100)
+    .toString()
+    .padStart(3, ' ');
+
+  return `optimizing [${'#'.repeat(filledWidth)}${'-'.repeat(emptyWidth)}] ${percent}% ${completedFiles}/${totalFiles}`;
 }

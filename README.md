@@ -21,6 +21,7 @@ Production-grade image optimization for Node.js and modern JavaScript frameworks
 - Dry-run mode for CI and preview builds
 - Atomic output replacement to avoid partial writes
 - Same-directory rerun protection for generated WebP fallbacks
+- Build-time static reference rewriting with manifest output
 - Dual ESM/CJS output with generated TypeScript declarations
 - Lightweight plugin hooks for future integrations
 
@@ -76,6 +77,13 @@ Options:
       --debug               enable debug logging
       --concurrency <n>     number of files to process in parallel
       --format <formats...> output formats to generate (avif webp)
+      --rewrite <paths...>  directories or files to scan and rewrite
+      --rewrite-extensions <extensions...>
+                            source file extensions to scan during rewriting
+      --prefer <format>     preferred rewrite output format (avif webp)
+      --manifest [path]     write a JSON optimization manifest
+      --rewrite-dry-run     report rewrite changes without writing source files
+      --progress            render progress when stdout is an interactive TTY
   -h, --help                display help for command
 ```
 
@@ -88,6 +96,65 @@ img-optimize ./images --dry-run
 img-optimize ./gallery --concurrency 4 --format avif webp
 img-optimize ./src/assets --config ./image-optimizer.config.js
 ```
+
+## Build-Time Reference Rewriting
+
+Generate optimized assets and rewrite static source references in one build step:
+
+```bash
+img-optimize ./public/foldername --format webp --rewrite ./src
+```
+
+This converts inputs such as:
+
+```text
+public/foldername/1.jpg
+public/foldername/4.png
+public/foldername/5.jpeg
+```
+
+into:
+
+```text
+public/foldername/1.webp
+public/foldername/4.webp
+public/foldername/5.webp
+```
+
+and rewrites static references:
+
+```text
+"/foldername/1.jpg" -> "/foldername/1.webp"
+'/foldername/4.png' -> '/foldername/4.webp'
+`/foldername/5.jpeg` -> `/foldername/5.webp`
+```
+
+When multiple outputs exist, choose the preferred format and write a manifest:
+
+```bash
+img-optimize ./public/assets --format avif webp --prefer avif --rewrite ./src --manifest
+```
+
+`--manifest` without a path writes `image-optimizer.manifest.json` inside the input root. The manifest maps source files to generated outputs:
+
+```json
+[
+  {
+    "sourceAbsolutePath": "/project/public/assets/logo.png",
+    "sourceRelativePath": "assets/logo.png",
+    "outputs": [
+      {
+        "format": "avif",
+        "absolutePath": "/project/public/assets/logo.avif",
+        "relativePath": "assets/logo.avif",
+        "publicPath": "/assets/logo.avif"
+      }
+    ]
+  }
+]
+```
+
+This feature rewrites only static string references. Dynamic image paths should use the generated manifest or a framework integration.
 
 ## API Usage
 
@@ -123,6 +190,13 @@ const options: OptimizerOptions = {
   concurrency: 8,
   dryRun: false,
   verbose: true,
+  rewrite: {
+    targets: ['./src'],
+    extensions: ['ts', 'tsx', 'css'],
+    prefer: 'avif',
+    dryRun: false,
+  },
+  manifest: true,
 };
 ```
 
@@ -190,6 +264,7 @@ Logging modes:
 - `outputDir` must stay inside the input directory
 - Path values reject null bytes
 - Symbolic links are skipped during recursive scans
+- Reference rewriting skips common build/vendor directories such as `node_modules`, `.git`, `dist`, `build`, `.next`, and `coverage`
 - Generated outputs are replaced atomically to avoid partial files
 - Existing outputs are overwritten only when the source is newer
 - Corrupted images fail in isolation and do not stop the full queue

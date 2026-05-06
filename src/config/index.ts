@@ -4,6 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { assertNoNullBytes } from '../core/security';
+import { DEFAULT_REWRITE_EXTENSIONS } from '../core/rewrite';
 import type {
   LoadedConfig,
   LogLevel,
@@ -43,6 +44,9 @@ export async function resolveOptimizerConfig(
     ? resolveOutputDirectory(rootDir, mergedOptions.outputDir)
     : undefined;
   const exclude = normalizePatterns(mergedOptions.exclude ?? DEFAULT_EXCLUDE);
+  const formats = normalizeFormats(mergedOptions.formats);
+  const rewrite = normalizeRewriteOptions(mergedOptions.rewrite, formats);
+  const manifest = normalizeManifestOption(mergedOptions.manifest, cwd);
 
   if (outputDir !== undefined) {
     const outputRelativePath = path.relative(rootDir, outputDir).replace(/\\/g, '/');
@@ -52,12 +56,14 @@ export async function resolveOptimizerConfig(
   return {
     rootDir,
     quality: normalizeQuality(mergedOptions.quality),
-    formats: normalizeFormats(mergedOptions.formats),
+    formats,
     include: normalizePatterns(mergedOptions.include ?? DEFAULT_INCLUDE),
     exclude: deduplicateStrings(exclude),
     concurrency: normalizeConcurrency(mergedOptions.concurrency),
     dryRun: normalizeBoolean(mergedOptions.dryRun, 'dryRun'),
     logLevel: resolveLogLevel(mergedOptions),
+    ...(rewrite !== undefined ? { rewrite } : {}),
+    ...(manifest !== undefined ? { manifest } : {}),
     plugins: normalizePlugins(mergedOptions.plugins),
     ...(outputDir !== undefined ? { outputDir } : {}),
     ...(loadedConfig.configFilePath !== undefined
@@ -123,7 +129,7 @@ function mergeOptions(
   base: Partial<OptimizerOptions>,
   overrides: OptimizerOptions,
 ): OptimizerOptions {
-  return {
+  const mergedOptions: OptimizerOptions = {
     ...base,
     ...overrides,
     quality: {
@@ -135,6 +141,21 @@ function mergeOptions(
     ...(overrides.exclude !== undefined ? { exclude: overrides.exclude } : {}),
     ...(overrides.plugins !== undefined ? { plugins: overrides.plugins } : {}),
   };
+
+  if (base.rewrite !== undefined || overrides.rewrite !== undefined) {
+    mergedOptions.rewrite = {
+      ...(base.rewrite ?? {}),
+      ...(overrides.rewrite ?? {}),
+    } as NonNullable<OptimizerOptions['rewrite']>;
+  }
+
+  if (overrides.manifest !== undefined) {
+    mergedOptions.manifest = overrides.manifest;
+  } else if (base.manifest !== undefined) {
+    mergedOptions.manifest = base.manifest;
+  }
+
+  return mergedOptions;
 }
 
 function normalizeExport(candidate: unknown): Partial<OptimizerOptions> {
@@ -190,6 +211,118 @@ function normalizeFormats(input: OutputFormat[] | undefined): OutputFormat[] {
   }
 
   return validatedFormats;
+}
+
+function normalizeRewriteOptions(
+  input: OptimizerOptions['rewrite'],
+  formats: readonly OutputFormat[],
+): ResolvedOptimizerOptions['rewrite'] | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+
+  if (!isPlainObject(input)) {
+    throw new Error('rewrite must be an object.');
+  }
+
+  if (!Array.isArray(input.targets) || input.targets.length === 0) {
+    throw new Error('rewrite.targets must be a non-empty array of paths.');
+  }
+
+  const targets = input.targets.map((target, index) => normalizePathEntry(target, index));
+  const extensions =
+    input.extensions === undefined
+      ? DEFAULT_REWRITE_EXTENSIONS
+      : normalizeRewriteExtensions(input.extensions);
+  const prefer = normalizePreferredFormat(input.prefer, formats);
+
+  return {
+    targets,
+    extensions,
+    prefer,
+    dryRun: normalizeBoolean(input.dryRun, 'rewrite.dryRun'),
+  };
+}
+
+function normalizeRewriteExtensions(extensions: readonly string[]): string[] {
+  if (!Array.isArray(extensions)) {
+    throw new Error('rewrite.extensions must be an array of file extensions.');
+  }
+
+  return deduplicateStrings(
+    extensions
+      .map((extension, index) => {
+        if (typeof extension !== 'string') {
+          throw new Error(`rewrite.extensions[${index}] must be a string.`);
+        }
+
+        assertNoNullBytes(extension, `rewrite.extensions[${index}]`);
+        return extension.trim().toLowerCase().replace(/^\.+/u, '');
+      })
+      .filter((extension) => extension.length > 0),
+  );
+}
+
+function normalizePreferredFormat(format: unknown, formats: readonly OutputFormat[]): OutputFormat {
+  if (format === undefined) {
+    const firstFormat = formats[0];
+
+    if (firstFormat === undefined) {
+      throw new Error('At least one output format must be configured.');
+    }
+
+    return firstFormat;
+  }
+
+  if (format !== 'avif' && format !== 'webp') {
+    throw new Error(
+      `Unsupported preferred format "${formatInvalidValue(format)}". Use "avif" or "webp".`,
+    );
+  }
+
+  return format;
+}
+
+function formatInvalidValue(value: unknown): string {
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return String(value);
+  }
+
+  if (value === null) {
+    return 'null';
+  }
+
+  return typeof value;
+}
+
+function normalizeManifestOption(
+  value: OptimizerOptions['manifest'],
+  cwd: string,
+): ResolvedOptimizerOptions['manifest'] | undefined {
+  if (value === undefined || value === false) {
+    return undefined;
+  }
+
+  if (value === true) {
+    return true;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('manifest must be a boolean or path string.');
+  }
+
+  assertNoNullBytes(value, 'manifest');
+
+  if (value.trim().length === 0) {
+    throw new Error('manifest path must not be empty.');
+  }
+
+  return path.resolve(cwd, value);
 }
 
 function normalizePatterns(patterns: readonly string[]): string[] {
@@ -335,6 +468,22 @@ function normalizePatternEntry(pattern: unknown, index: number): string {
 
   assertNoNullBytes(pattern, `Pattern at index ${index}`);
   return pattern.replace(/\\/g, '/').trim();
+}
+
+function normalizePathEntry(pathEntry: unknown, index: number): string {
+  if (typeof pathEntry !== 'string') {
+    throw new Error(`rewrite.targets[${index}] must be a string.`);
+  }
+
+  assertNoNullBytes(pathEntry, `rewrite.targets[${index}]`);
+
+  const normalizedPath = pathEntry.trim();
+
+  if (normalizedPath.length === 0) {
+    throw new Error(`rewrite.targets[${index}] must not be empty.`);
+  }
+
+  return normalizedPath;
 }
 
 function deduplicateStrings<T extends string>(values: readonly T[]): T[] {

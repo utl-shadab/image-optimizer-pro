@@ -64,6 +64,28 @@ describe('CLI', () => {
     expect(await fileExists(path.join(rootDir, 'banner.webp'))).toBe(false);
   });
 
+  it('renders progress output when requested for an interactive stdout', async () => {
+    const rootDir = await createTempDirectory('image-optimizer-pro-cli-', tempDirectories);
+    await createImageFixture(path.join(rootDir, 'hero.png'), { format: 'png' });
+
+    const stdout: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const exitCode = await runCli([rootDir, '--format', 'webp', '--progress'], {
+      stdout: {
+        isTTY: true,
+        write(chunk: string) {
+          stdout.push(chunk);
+        },
+      },
+      stderr: createBufferWriter([]),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.join('')).toContain('optimizing [');
+    expect(stdout.join('')).toContain('100% 1/1');
+  });
+
   it('returns an error for invalid format arguments', async () => {
     const rootDir = await createTempDirectory('image-optimizer-pro-cli-', tempDirectories);
     await createImageFixture(path.join(rootDir, 'hero.png'), { format: 'png' });

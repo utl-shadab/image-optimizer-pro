@@ -1,10 +1,13 @@
 import { performance } from 'node:perf_hooks';
+import path from 'node:path';
 
 import { resolveOptimizerConfig } from '../config';
 import { createLogger, snapshotStats } from './logger';
+import { buildImageManifest, writeImageManifest } from './manifest';
 import { processImage } from './processor';
 import { runTaskQueue } from './queue';
 import { formatErrorMessage } from './security';
+import { rewriteImageReferences } from './rewrite';
 import { scanDirectory } from './scanner';
 import type {
   FileProcessingResult,
@@ -58,6 +61,28 @@ export async function optimizeImages(
     durationMs: performance.now() - startedAt,
   };
 
+  if (config.manifest !== undefined || config.rewrite !== undefined) {
+    const manifest = buildImageManifest(finalResult);
+
+    if (config.manifest !== undefined) {
+      await writeImageManifest(manifest, resolveManifestOutputPath(config));
+      finalResult.manifest = manifest;
+    } else if (config.rewrite !== undefined) {
+      finalResult.manifest = manifest;
+    }
+
+    if (config.rewrite !== undefined) {
+      finalResult.rewrite = await rewriteImageReferences(manifest, {
+        targets: config.rewrite.targets,
+        extensions: config.rewrite.extensions,
+        prefer: config.rewrite.prefer,
+        dryRun: config.dryRun || config.rewrite.dryRun,
+      });
+    }
+  }
+
+  finalResult.durationMs = performance.now() - startedAt;
+
   await callPluginHook(pluginContext, config, 'onComplete', finalResult);
   logger.summary(finalResult);
 
@@ -94,6 +119,18 @@ async function safelyProcessFile(
       durationMs: 0,
     };
   }
+}
+
+function resolveManifestOutputPath(config: ResolvedOptimizerOptions): string {
+  if (config.manifest === true) {
+    return path.join(config.rootDir, 'image-optimizer.manifest.json');
+  }
+
+  if (typeof config.manifest === 'string') {
+    return config.manifest;
+  }
+
+  throw new Error('manifest output path is not configured.');
 }
 
 function updateStats(stats: ProgressStats, result: FileProcessingResult): void {

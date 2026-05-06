@@ -47,6 +47,39 @@ export interface FileProcessingResult {
   durationMs: number;
 }
 
+export interface ImageManifestOutput {
+  format: OutputFormat;
+  absolutePath: string;
+  relativePath: string;
+  publicPath: string;
+}
+
+export interface ImageManifestEntry {
+  sourceAbsolutePath: string;
+  sourceRelativePath: string;
+  outputs: ImageManifestOutput[];
+}
+
+export type RewriteQuote = '"' | "'" | '`';
+
+export interface RewriteChange {
+  filePath: string;
+  fileRelativePath: string;
+  sourceAbsolutePath: string;
+  outputAbsolutePath: string;
+  original: string;
+  replacement: string;
+  quote: RewriteQuote;
+}
+
+export interface RewriteResult {
+  filesScanned: number;
+  filesChanged: number;
+  replacements: number;
+  changes: RewriteChange[];
+  dryRun: boolean;
+}
+
 export interface ProgressStats {
   totalFiles: number;
   processedFiles: number;
@@ -99,11 +132,19 @@ export interface OptimizerOptions {
   silent?: boolean;
   debug?: boolean;
   config?: string;
+  rewrite?: {
+    targets: string[];
+    extensions?: string[];
+    prefer?: OutputFormat;
+    dryRun?: boolean;
+  };
+  manifest?: boolean | string;
   plugins?: ImageOptimizerPlugin[];
 }
 
 export interface CliOutputWriter {
   write(chunk: string): void;
+  isTTY?: boolean;
 }
 
 export interface CliRunOptions {
@@ -122,6 +163,13 @@ export interface ResolvedOptimizerOptions {
   dryRun: boolean;
   logLevel: LogLevel;
   configFilePath?: string;
+  rewrite?: {
+    targets: string[];
+    extensions: string[];
+    prefer: OutputFormat;
+    dryRun: boolean;
+  };
+  manifest?: true | string;
   plugins: ImageOptimizerPlugin[];
 }
 
@@ -135,5 +183,7 @@ export interface OptimizationResult {
   config: ResolvedOptimizerOptions;
   stats: ProgressStats;
   files: FileProcessingResult[];
+  manifest?: ImageManifestEntry[];
+  rewrite?: RewriteResult;
   durationMs: number;
 }

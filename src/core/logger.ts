@@ -104,6 +104,21 @@ export function createLogger(level: LogLevel): Logger {
           )}`,
         ),
       );
+
+      if (result.rewrite !== undefined) {
+        write(formatRewriteSummary(result.rewrite.dryRun, result.rewrite));
+
+        if (isVerbose) {
+          for (const change of result.rewrite.changes) {
+            const quote = change.quote;
+            write(
+              chalk.gray(
+                `${change.fileRelativePath}: ${quote}${change.original}${quote} -> ${quote}${change.replacement}${quote}`,
+              ),
+            );
+          }
+        }
+      }
     },
   };
 
@@ -143,4 +158,19 @@ function formatDryRunSuffix(dryRun: boolean, stats: ProgressStats): string {
   }
 
   return stats.generatedFiles > 0 ? ' (simulated writes)' : ' (dry run)';
+}
+
+function formatRewriteSummary(
+  dryRun: boolean,
+  rewrite: NonNullable<OptimizationResult['rewrite']>,
+): string {
+  if (dryRun) {
+    return chalk.yellow(
+      `rewrite dry-run: ${rewrite.replacements} replacement(s) would be made across ${rewrite.filesChanged} file(s)`,
+    );
+  }
+
+  return chalk.green(
+    `rewritten ${rewrite.replacements} reference(s) across ${rewrite.filesChanged} file(s)`,
+  );
 }
